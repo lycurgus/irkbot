@@ -16,8 +16,10 @@ type CommandModule struct {
 }
 
 type ParserModule struct {
-	Configure func(*configure.Config)
-	Run       func(*configure.Config, *message.InboundMsg, *Actions) bool
+	Configure  func(*configure.Config)
+	Run        func(*configure.Config, *message.InboundMsg, *Actions) bool
+	HasPrivmsg bool
+	HasAction  bool
 }
 
 type TickerModule struct {
@@ -43,12 +45,12 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 			cmdMap["createalias"] = &CommandModule{nil, HelpCreateAlias, CreateAlias}
 			cmdMap["deletealias"] = &CommandModule{nil, HelpDeleteAlias, DeleteAlias}
 			cmdMap["listaliases"] = &CommandModule{nil, HelpListAliases, ListAliases}
-			parserModules = append(parserModules, &ParserModule{ConfigAlias, CheckAliases})
+			parserModules = append(parserModules, &ParserModule{ConfigAlias, CheckAliases, true, false})
 		case "echo_name":
-			parserModules = append(parserModules, &ParserModule{nil, EchoName})
+			parserModules = append(parserModules, &ParserModule{nil, EchoName, true, false})
 		case "help":
 			cmdMap["help"] = &CommandModule{nil, nil, Help}
-			parserModules = append(parserModules, &ParserModule{nil, ParseHelp})
+			parserModules = append(parserModules, &ParserModule{nil, ParseHelp, true, false})
 		case "slam":
 			cmdMap["slam"] = &CommandModule{ConfigSlam, HelpSlam, Slam}
 		case "compliment":
@@ -58,7 +60,7 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 		case "quote":
 			cmdMap["grab"] = &CommandModule{nil, HelpGrabQuote, GrabQuote}
 			cmdMap["quote"] = &CommandModule{nil, HelpGetQuote, GetQuote}
-			parserModules = append(parserModules, &ParserModule{ConfigQuote, UpdateQuoteBuffer})
+			parserModules = append(parserModules, &ParserModule{ConfigQuote, UpdateQuoteBuffer, true, true})
 			tickerModules = append(
 				tickerModules,
 				&TickerModule{
@@ -77,7 +79,7 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 		case "urban_trending":
 			cmdMap["urban_trending"] = &CommandModule{nil, HelpUrbanTrending, UrbanTrending}
 		case "url":
-			parserModules = append(parserModules, &ParserModule{nil, Url})
+			parserModules = append(parserModules, &ParserModule{nil, Url, true, false})
 		case "interject":
 			cmdMap["interject"] = &CommandModule{nil, HelpInterject, Interject}
 		case "xkcd":
@@ -88,10 +90,6 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 			cmdMap["doom"] = &CommandModule{nil, HelpDoom, Doom}
 		case "youtube":
 			cmdMap["yt"] = &CommandModule{nil, HelpYoutube, Youtube}
-		case "features":
-			cmdMap["features"] = &CommandModule{ConfigFeature, HelpGetFeatures, GetFeatures}
-			cmdMap["featurerequest"] = &CommandModule{ConfigFeature, HelpRequestFeature, RequestFeature}
-			cmdMap["featuredone"] = &CommandModule{ConfigFeature, HelpMarkFeature, MarkFeatureDone}
 		default:
 			return fmt.Errorf("invalid name '%s' in module config", moduleName)
 		}
@@ -164,8 +162,10 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 
 		// run parser modules
 		for _, m := range parserModules {
-			if m.Run(cfg, &inboundMsg, &actions) {
-				return
+			if m.HasPrivmsg {
+				if m.Run(cfg, &inboundMsg, &actions) {
+					return
+				}
 			}
 		}
 
@@ -180,6 +180,48 @@ func RegisterModules(conn *irc.Connection, cfg *configure.Config, outChan chan m
 			}
 		}
 
+	})
+
+	conn.AddCallback("CTCP_ACTION", func(e *irc.Event) {
+		inboundMsg := message.InboundMsg{}
+		inboundMsg.Msg = e.Message()
+		inboundMsg.MsgArgs = strings.Fields(inboundMsg.Msg)
+		inboundMsg.Src = e.Arguments[0]
+		if !strings.HasPrefix(inboundMsg.Src, "#") {
+			inboundMsg.Src = e.Nick
+		}
+		inboundMsg.Event = e
+
+		actions.Say = func(msg string) {
+			outboundMsg := message.OutboundMsg{
+				Conn: conn,
+				Dest: inboundMsg.Src,
+				Msg:  msg,
+			}
+			outChan <- outboundMsg
+		}
+
+		// run parser modules
+		for _, m := range parserModules {
+			if m.HasAction {
+				if m.Run(cfg, &inboundMsg, &actions) {
+					return
+				}
+			}
+		}
+
+		// check commands
+		/*
+		cmdPrefix := cfg.Channel.CmdPrefix
+		if cmdPrefix == "" {
+			cmdPrefix = "."
+		}
+		if strings.HasPrefix(inboundMsg.Msg, cmdPrefix) {
+			if m, ok := cmdMap[strings.TrimPrefix(inboundMsg.MsgArgs[0], cmdPrefix)]; ok {
+				m.Run(cfg, &inboundMsg, &actions)
+			}
+		}
+		*/
 	})
 
 	return nil

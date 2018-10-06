@@ -18,6 +18,7 @@ type QuoteBuffer struct {
 	Nick string `gorm:"unique_index:idx_quotes_nick"`
 	Text string
 	Date time.Time
+	Type uint
 }
 
 type Quote struct {
@@ -25,6 +26,12 @@ type Quote struct {
 	Nick string
 	Text string
 	Date time.Time
+	Type uint
+}
+
+type MessageType struct {
+	ID   uint `gorm:"primary_key"`
+	Type string `gorm:"unique_index:idx_messagetype"`
 }
 
 var dbFile string
@@ -41,6 +48,9 @@ func ConfigQuote(cfg *configure.Config) {
 
 	db.AutoMigrate(&QuoteBuffer{})
 	db.AutoMigrate(&Quote{})
+	db.AutoMigrate(&MessageType{})
+	db.FirstOrCreate(&MessageType{Type: "PRIVMSG"})
+	db.FirstOrCreate(&MessageType{Type: "CTCP_ACTION"})
 }
 
 func UpdateQuoteBuffer(cfg *configure.Config, in *message.InboundMsg, actions *Actions) bool {
@@ -56,9 +66,12 @@ func UpdateQuoteBuffer(cfg *configure.Config, in *message.InboundMsg, actions *A
 	}
 	defer db.Close()
 
+	msgType := MessageType{}
+	db.First(&msgType, MessageType{Type: in.Event.Code})
+
 	q := QuoteBuffer{}
 	db.FirstOrCreate(&q, QuoteBuffer{Nick: in.Event.Nick})
-	db.Model(&q).Updates(QuoteBuffer{Text: in.Msg, Date: time.Now()})
+	db.Model(&q).Updates(QuoteBuffer{Text: in.Msg, Date: time.Now(), Type: msgType.ID})
 
 	return false
 }
@@ -151,7 +164,7 @@ func GrabQuote(cfg *configure.Config, in *message.InboundMsg, actions *Actions) 
 		return
 	}
 
-	db.Create(&Quote{Nick: q.Nick, Text: q.Text, Date: q.Date})
+	db.Create(&Quote{Nick: q.Nick, Text: q.Text, Date: q.Date, Type: q.Type})
 	db.Delete(&q)
 	actions.Say(fmt.Sprintf("%s: grabbed", in.Event.Nick))
 
@@ -198,8 +211,19 @@ func GetQuote(cfg *configure.Config, in *message.InboundMsg, actions *Actions) {
 	}
 
 	quote := quotes[rand.Intn(len(quotes))]
+	msgType := MessageType{}
+	db.First(&msgType, MessageType{ID: quote.Type})
+	format := ""
+	switch msgType.Type {
+		case "PRIVMSG":
+			format = "<%s> %s"
+		case "CTCP_ACTION":
+			format = "* %s %s"
+		default:
+			format = "<%s> %s" //so existing messages with NULL for their type are ok
+	}
 	msg := fmt.Sprintf(
-		"<%s> %s",
+		format,
 		quote.Nick,
 		quote.Text,
 	)
